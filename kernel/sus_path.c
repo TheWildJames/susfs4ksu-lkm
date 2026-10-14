@@ -2068,6 +2068,11 @@ static __nocfi noinline long sus_path_dirty_inodes(void)
     return sus_path_nr_dirty_inodes_fn();
 }
 
+static __nocfi noinline unsigned long sus_path_max_files(void)
+{
+    return sus_path_get_max_files_fn();
+}
+
 static void sus_path_fd_ino_show(struct seq_file *m)
 {
     bool live_fd = false, live_ino = false;
@@ -2083,7 +2088,7 @@ static void sus_path_fd_ino_show(struct seq_file *m)
         fd_used = (s64)READ_ONCE(sus_path_files_stat->nr_files);
     }
     if (sus_path_get_max_files_fn)
-        fd_max = sus_path_get_max_files_fn();
+        fd_max = sus_path_max_files();
 
     if (sus_path_nr_dirty_inodes_fn) {
         ino_used = (s64)sus_path_dirty_inodes();
