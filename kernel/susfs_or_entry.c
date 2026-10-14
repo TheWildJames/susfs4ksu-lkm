@@ -22,9 +22,10 @@
  * get_unused_fd_flags and fd_install are exported, getname_flags, filename_lookup and putname are
  * not - and the layer stays off if any of them is missing.
  *
- * Off by default (module parameter or_entry): the vfs_open path is what has been on devices so far,
- * and the two can coexist - a redirected open never reaches vfs_open, because the original syscall
- * is not called at all when this layer redirects.
+ * On by default (module parameter or_entry).  It used to be opt-in, back when the vfs_open probe was
+ * still the default forward direction; that probe is gone, so this layer IS the forward direction -
+ * which is also why or_register() refuses a rule while it is not armed, and why an unarmed layer
+ * says so in the log instead of failing silently.
  */
 #include <linux/kernel.h>
 #include <linux/module.h>
@@ -63,8 +64,10 @@ static void (*or_fd_install_fn)(unsigned int fd, struct file *file);
 static bool or_entry_ready;
 static atomic_t or_entry_hits = ATOMIC_INIT(0);
 
-/* Off by default: see the file header.  Turning it on is what makes rules stop pinning inodes. */
-static bool or_entry_param;
+/* On by default: this IS the forward direction now (the vfs_open probe is gone from
+ * susfs_open_redirect.c), and the layer reports rather than redirects when a symbol is missing - the
+ * rule-management path then refuses rules, so an unarmed layer is loud instead of a silent no-op. */
+static bool or_entry_param = true;
 module_param_named(or_entry, or_entry_param, bool, 0600);
 
 susfs_or_entry_fn_t susfs_or_entry_hook;
@@ -91,6 +94,12 @@ static __nocfi noinline long or_entry_redirect(const struct pt_regs *regs, int k
 	int fd;
 
 	if (!or_entry_ready || !READ_ONCE(or_entry_param))
+		return SUSFS_OR_ENTRY_PASS;
+
+	/* This hook is reached for every open() on the system, so the empty case has to be one load: no
+	 * rules means nothing to resolve a name for.  (A rule that was deleted still counts - slots are
+	 * never reused - which only means the lookup below runs and misses.) */
+	if (!susfs_open_redirect_active())
 		return SUSFS_OR_ENTRY_PASS;
 
 	/* arm64 keeps a syscall's arguments in regs[0..5] for native and compat alike, so the
@@ -170,7 +179,7 @@ int susfs_or_entry_init(void)
 
 	if (!or_getname_flags_fn || !or_filename_lookup_fn || !or_putname_fn ||
 	    !or_filp_open_fn || !or_get_unused_fd_flags_fn || !or_fd_install_fn) {
-		SUSFS_LOGI("or_entry: not armed, a symbol is missing (getname_flags=%d filename_lookup=%d putname=%d filp_open=%d get_unused_fd_flags=%d fd_install=%d) - the vfs_open path is unaffected\n",
+		SUSFS_LOGI("or_entry: not armed, a symbol is missing (getname_flags=%d filename_lookup=%d putname=%d filp_open=%d get_unused_fd_flags=%d fd_install=%d) - open_redirect will refuse rules\n",
 			   !!or_getname_flags_fn, !!or_filename_lookup_fn, !!or_putname_fn,
 			   !!or_filp_open_fn, !!or_get_unused_fd_flags_fn, !!or_fd_install_fn);
 		return 0;

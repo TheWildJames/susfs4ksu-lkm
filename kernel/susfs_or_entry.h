@@ -30,6 +30,13 @@ typedef long (*susfs_or_entry_fn_t)(const struct pt_regs *regs, int kind);
 
 extern susfs_or_entry_fn_t susfs_or_entry_hook;
 
+/* True once redirection can actually happen.  The open_redirect layer checks this when a rule is added:
+ * a rule that cannot fire is worse than no rule, so it refuses rather than register one. */
+static inline bool susfs_or_entry_armed(void)
+{
+	return READ_ONCE(susfs_or_entry_hook) != NULL;
+}
+
 /* Both are called from the open_redirect layer's init/exit.  init never fails: the layer is
  * optional, and refusing to arm is reported and survived. */
 int susfs_or_entry_init(void);

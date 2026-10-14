@@ -179,8 +179,19 @@ bool susfs_open_redirect_spoof_ids(unsigned long ino, unsigned long *out_ino, un
  * treats as "no rule". */
 const char *susfs_open_redirect_match_path(const struct path *path);
 
+/* Number of open_redirect rules ever added (monotonic: a slot is never reused, so a deleted rule still counts).  The
+ * name-layer hook runs for every open() on the system, so it tests this before it resolves anything - an empty table
+ * costs one load instead of a path lookup.  or_add() keeps it in step with the rule array. */
+extern unsigned int susfs_open_redirect_rules;
+
+static inline bool susfs_open_redirect_active(void)
+{
+	return READ_ONCE(susfs_open_redirect_rules) != 0;
+}
+
 /* The name-layer redirection of the same feature: no cached path, no inode held.  Optional - it
- * stays unarmed when a symbol it needs is missing - and off unless the or_entry parameter says so. */
+ * stays unarmed when a symbol it needs is missing, and such a layer makes open_redirect refuse
+ * rules - and on by default (the or_entry parameter can turn it off). */
 int susfs_or_entry_init(void);
 void susfs_or_entry_exit(void);
 
