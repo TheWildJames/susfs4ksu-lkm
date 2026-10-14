@@ -489,7 +489,9 @@ jobs:
           if [ -z "$S" ]; then echo "NL|$V|no symbol source"; exit 0; fi
           echo "NL|$V|source=$S"
           for s in filp_open get_unused_fd_flags fd_install user_path_at kern_path path_put path_get \
-                   d_backing_inode dput mntput getname_kernel vfs_open; do
+                   d_backing_inode dput mntput getname_kernel vfs_open \
+                   filename_lookup user_path_at_empty getname_flags getname filename_parentat \
+                   do_filp_open path_openat do_dentry_open; do
             m=0
             if [ -f "$S/System.map" ]; then m=$(grep -cE "(^|[[:space:]])$s\$" "$S/System.map" || true); fi
             y=0
