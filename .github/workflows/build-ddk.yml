@@ -475,6 +475,28 @@ jobs:
       # the 6.18 mount-id allocator - the last three are not exported to modules at all, so the
       # loader gate above is the only thing that can supply them and their per-tree answer has to
       # be in the log.
+      # TEMPORARY PROBE (open_redirect name-layer prototype): that design resolves the caller's own
+      # path and then opens the redirect target itself, so it needs these by name.  Record what each
+      # tree has, and whether it is exported (Module.symvers), before building anything on them.
+      - name: name-layer symbol probe (temporary)
+        run: |
+          set -e
+          V="${{ matrix.variant }}"
+          S=""
+          for d in "${KDIR:-}" "${KERNEL_SRC:-}" "/opt/ddk/kdir/$V" "/opt/ddk/src/$V" /opt/ddk/kdir/* /opt/ddk/src/*; do
+            if [ -n "$d" ] && { [ -f "$d/System.map" ] || [ -f "$d/vmlinux" ]; }; then S="$d"; break; fi
+          done
+          if [ -z "$S" ]; then echo "NL|$V|no symbol source"; exit 0; fi
+          echo "NL|$V|source=$S"
+          for s in filp_open get_unused_fd_flags fd_install user_path_at kern_path path_put path_get \
+                   d_backing_inode dput mntput getname_kernel vfs_open; do
+            m=0
+            if [ -f "$S/System.map" ]; then m=$(grep -cE "(^|[[:space:]])$s\$" "$S/System.map" || true); fi
+            y=0
+            if [ -f "$S/Module.symvers" ]; then y=$(grep -cE "^0x[0-9a-fA-F]+[[:space:]]+$s[[:space:]]" "$S/Module.symvers" || true); fi
+            printf 'NL|%s|  %-22s present=%s exported=%s\n' "$V" "$s" "${m:-0}" "${y:-0}"
+          done
+
       - name: Check the symbols the module resolves by name (DDK tree)
         run: |
           set -e
