@@ -180,6 +180,9 @@ static __nocfi bool or_in_su_domain(void)
  * `uid >= 10000` proxy that also covered the manager and su-granted apps. */
 static bool or_reverse_visible(void)
 {
+	/* TEMP probe build: the real gate needs a SUSFS-patched KernelSU (TIF_PROC_UMOUNTED), so force it here to see what
+	 * the reverse faces actually answer with.  Not for any other purpose. */
+	return true;
 	return susfs_is_current_proc_umounted_app();
 }
 
