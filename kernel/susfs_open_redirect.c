@@ -240,6 +240,23 @@ static struct sus_or_entry *or_find_by_redirected_inode(unsigned long ino, dev_t
 /* Reverse direction for the one caller that has only numbers: /proc/<pid>/fdinfo/N prints "mnt_id:\t<i>" and "ino:\t<j>"
  * for the file an fd points at and no device, so this lookup is by ino alone; two rules sharing that ino refuses to
  * answer (a missed disguise beats disguising an unrelated file).  On success: the target's ino and mount id (0 unknown). */
+/* Diagnostic for /proc/susfs_path: how many cached struct paths this table is holding.
+ * A path holds a dentry reference and a mount reference, and so keeps the inode alive -
+ * the same object it is that a filesystem teardown waits for.  Retired (dead) slots keep
+ * theirs as well, so they are counted. */
+int susfs_open_redirect_held_paths(void)
+{
+	int i, held = 0;
+
+	for (i = 0; i < READ_ONCE(nor); i++) {
+		if (or_entries[i].redirected_path.dentry)
+			held++;
+		if (or_entries[i].target_path.dentry)
+			held++;
+	}
+	return held;
+}
+
 bool susfs_open_redirect_spoof_ids(unsigned long ino, unsigned long *out_ino,
 				   unsigned long *out_mnt_id)
 {

@@ -3,6 +3,7 @@
 #define __SUSFS_H
 
 #include <linux/string.h>
+#include <linux/atomic.h>	/* the reference counters below */
 #include <linux/err.h>	/* IS_ERR */
 #include <linux/mm.h>	/* PAGE_SIZE */
 
@@ -163,5 +164,35 @@ static inline bool susfs_control_node_allowed(void)
  * this is a lookup by ino alone and returns false when the number is ambiguous (two rules, same redirected ino) or the caller is
  * not one the reverse disguise applies to.  On success *out_ino is the target inode to show, *out_mnt_id the target mount id. */
 bool susfs_open_redirect_spoof_ids(unsigned long ino, unsigned long *out_ino, unsigned long *out_mnt_id);
+
+/* ---- module-wide reference accounting (diagnostic) ---------------------------
+ * What THIS MODULE holds, not what the device holds.  Two numbers, printed by
+ * /proc/susfs_path: the inodes it keeps alive and the file references it holds.
+ * Both are aggregated over every layer on purpose, so a new holder only has to
+ * call the helper below instead of inventing its own counter.
+ *
+ * File references are counted as EVENTS (taken / released) rather than as a
+ * signed number: a short-lived reference still moves both counters, so an
+ * imbalance stays visible on a node read later, and a missing release cannot be
+ * hidden by a matching missing take.  Inode holds are counted by walking the
+ * tables that keep one (sus_path's rules, open_redirect's cached paths), which
+ * cannot drift from the code that releases them. */
+extern atomic_t susfs_file_refs_taken;
+extern atomic_t susfs_file_refs_released;
+
+static inline void susfs_file_ref_taken(void)
+{
+	atomic_inc(&susfs_file_refs_taken);
+}
+
+static inline void susfs_file_ref_released(void)
+{
+	atomic_inc(&susfs_file_refs_released);
+}
+
+/* Cached struct path holds (dentry + mount, and the inode hanging off them) kept by
+ * the open_redirect table.  Retired slots are counted too: nothing releases their
+ * paths before unload, which is exactly what has to be visible. */
+int susfs_open_redirect_held_paths(void);
 
 #endif

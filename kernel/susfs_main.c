@@ -37,6 +37,11 @@
 bool susfs_expose_proc = true;
 module_param_named(expose_proc, susfs_expose_proc, bool, 0600);
 
+/* Module-wide reference accounting, printed by /proc/susfs_path (see susfs.h).  Lives here
+ * because every layer of the module is linked into this object, so no layer has to own it. */
+atomic_t susfs_file_refs_taken = ATOMIC_INIT(0);
+atomic_t susfs_file_refs_released = ATOMIC_INIT(0);
+
 static const char *const susfs_self_hide_paths[] = {
     "/proc/susfs_kstat",
     "/proc/susfs_open_redirect",

@@ -180,10 +180,12 @@ static __nocfi long susfs_opath_post(long ret)
 	f = opath_fget_raw((unsigned int)ret);
 	if (!f)
 		return ret;
+	susfs_file_ref_taken();
 
 	if (!(f->f_mode & FMODE_PATH)) {
 		/* Not an O_PATH open: leave the answer untouched - but drop the reference
 		 * first, or every ordinary open would leak one. */
+		susfs_file_ref_released();
 		fput(f);
 		return ret;
 	}
@@ -198,6 +200,7 @@ static __nocfi long susfs_opath_post(long ret)
 		struct dentry *drop = f->f_path.dentry;
 
 		dget(drop);
+		susfs_file_ref_released();
 		fput(f);
 		opath_d_invalidate(drop);
 		opath_dput(drop);
@@ -206,6 +209,7 @@ static __nocfi long susfs_opath_post(long ret)
 		/* Release before deciding: the deny path takes an fd-table lock, and holding a file
 		 * reference across it buys nothing (the file is in this task's table and cannot go
 		 * away while its own syscall is running). */
+		susfs_file_ref_released();
 		fput(f);
 	}
 
@@ -222,12 +226,14 @@ static __nocfi long susfs_opath_post(long ret)
 		atomic_inc(&n_opath_err);
 		return ret;
 	}
+	susfs_file_ref_taken();
 
 	/* fput() and not filp_close(): close_fd_get_file()'s comment asks for filp_close()
 	 * first, and for an O_PATH file that reduces to exactly this call - do_dentry_open()
 	 * set f_op = &empty_fops, so f_op->flush is NULL, and a file that was never opened for
 	 * reading can hold neither a POSIX lock nor a dnotify mark, which are the other two
 	 * things filp_close() would run before fput(). */
+	susfs_file_ref_released();
 	fput(victim);
 
 	atomic_inc(&n_opath_deny);

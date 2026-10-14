@@ -1997,118 +1997,43 @@ static int sus_path_show_list(char *buf, const struct kernel_param *kp)
     return sus_path_format_list(buf, PAGE_SIZE);
 }
 
-/* ---- global fd / inode occupancy (diagnostic only) ----------------------------
- * Two numbers a bring-up wants next to the rule table: how many file descriptors
- * and how many inodes the WHOLE system holds, so an abnormal spike (measured
- * once: 1.44M open files against a 1.48M max) can be watched from the same node
- * the rules are read from.  Global and feature-independent on purpose - the
- * sources are the kernel's own counters, not this module's rule count.
+/* ---- module-side fd / inode occupancy (diagnostic) ----------------------------
+ * Two numbers every device bring-up wants next to the rule table: how many inodes and
+ * how many file references THIS MODULE is holding - the module's own usage, not the
+ * device's.  Both are aggregated over every layer, so a new holder only has to call
+ * susfs_file_ref_taken()/susfs_file_ref_released() (files) or be walked here (inodes)
+ * instead of inventing a counter of its own.
  *
- * Live sources, resolved by name (data symbols need both resolvers, the same
- * reason susfs_fp_init() keeps both):
- *   fd : nr_files (the static percpu_counter) summed with __percpu_counter_sum()
- *   ino: get_nr_dirty_inodes() = nr_inodes - nr_unused, summed per CPU
- * Fallbacks, for a kallsyms that does not carry data symbols (no
- * CONFIG_KALLSYMS_ALL): files_stat / inodes_stat, which is the value the
- * /proc/sys/fs/file-nr and inode-nr handlers last refreshed - hence the source
- * is printed on every line and a cached reading can never be mistaken for a
- * live one.  Only the leading fields are mirrored, so no version can move them.
- * No new import: every pointer is resolved at first read, and a missing one
- * degrades to "unavailable" instead of failing the layer. */
-struct sus_path_files_stat {
-    unsigned long nr_files;
-};
-
-struct sus_path_inodes_stat {
-    long nr_inodes;
-    long nr_unused;
-};
-
-static struct sus_path_files_stat *sus_path_files_stat;
-static struct sus_path_inodes_stat *sus_path_inodes_stat;
-static void *sus_path_nr_files;                 /* struct percpu_counter * */
-static unsigned long (*sus_path_get_max_files_fn)(void);
-static long (*sus_path_nr_dirty_inodes_fn)(void);
-static s64 (*sus_path_percpu_sum_fn)(void *);
-static bool sus_path_fd_ino_resolved;
-
-static void *sus_path_fd_ino_data(const char *name)
+ * inodes: sus_path's rules hold one ihold() each, and open_redirect holds cached
+ *   struct paths (dentry + mount, and the inode with them) until unload - both are
+ *   counted by walking, so the number cannot drift from the releasing code.
+ * files : counted as events at the only places the module takes a reference of its
+ *   own (susfs_opath.c), because every such reference is short-lived by design; the
+ *   difference is what is still held, and a failed release shows up as an imbalance
+ *   even though no reader could ever catch the reference itself. */
+static int sus_path_held_rule_inodes(void)
 {
-    void *p = (void *)find_kernel_symbol_exact(name);
+    struct sus_path_entry *e;
+    int held = 0;
 
-    if (!p)
-        p = ksu_resolve_symbol_for_functable_hook(name);
-    return p;
-}
-
-static void sus_path_fd_ino_resolve(void)
-{
-    if (sus_path_fd_ino_resolved)
-        return;
-    /* Resolve once: a name that is absent on this kernel is absent on every read. */
-    sus_path_fd_ino_resolved = true;
-    sus_path_files_stat = sus_path_fd_ino_data("files_stat");
-    sus_path_inodes_stat = sus_path_fd_ino_data("inodes_stat");
-    sus_path_nr_files = sus_path_fd_ino_data("nr_files");
-    sus_path_get_max_files_fn = (void *)sus_path_fd_ino_data("get_max_files");
-    sus_path_nr_dirty_inodes_fn = (void *)sus_path_fd_ino_data("get_nr_dirty_inodes");
-    sus_path_percpu_sum_fn = (void *)sus_path_fd_ino_data("__percpu_counter_sum");
-}
-
-/* __nocfi + noinline on purpose: an instrumented indirect call into the kernel
- * panics rather than failing, and LTO inlines an unchecked helper back into the
- * caller that lacks the attribute (CONVENTIONS §6). */
-static __nocfi noinline s64 sus_path_percpu_sum(void *fbc)
-{
-    return sus_path_percpu_sum_fn(fbc);
-}
-
-static __nocfi noinline long sus_path_dirty_inodes(void)
-{
-    return sus_path_nr_dirty_inodes_fn();
-}
-
-static __nocfi noinline unsigned long sus_path_max_files(void)
-{
-    return sus_path_get_max_files_fn();
+    spin_lock(&sus_path_lock);
+    list_for_each_entry(e, &sus_path_list, list) {
+        if (e->inode)
+            held++;
+    }
+    spin_unlock(&sus_path_lock);
+    return held;
 }
 
 static void sus_path_fd_ino_show(struct seq_file *m)
 {
-    bool live_fd = false, live_ino = false;
-    s64 fd_used = -1, ino_used = -1;
-    unsigned long fd_max = 0;
+    int rules = sus_path_held_rule_inodes();
+    int paths = susfs_open_redirect_held_paths();
+    int taken = atomic_read(&susfs_file_refs_taken);
+    int released = atomic_read(&susfs_file_refs_released);
 
-    sus_path_fd_ino_resolve();
-
-    if (sus_path_nr_files && sus_path_percpu_sum_fn) {
-        fd_used = sus_path_percpu_sum(sus_path_nr_files);
-        live_fd = true;
-    } else if (sus_path_files_stat) {
-        fd_used = (s64)READ_ONCE(sus_path_files_stat->nr_files);
-    }
-    if (sus_path_get_max_files_fn)
-        fd_max = sus_path_max_files();
-
-    if (sus_path_nr_dirty_inodes_fn) {
-        ino_used = (s64)sus_path_dirty_inodes();
-        live_ino = true;
-    } else if (sus_path_inodes_stat) {
-        ino_used = (s64)READ_ONCE(sus_path_inodes_stat->nr_inodes) -
-                   (s64)READ_ONCE(sus_path_inodes_stat->nr_unused);
-    }
-
-    if (fd_used < 0)
-        seq_puts(m, "fd_used: unavailable\n");
-    else
-        seq_printf(m, "fd_used: %lld max: %lu src: %s\n", fd_used, fd_max,
-                   live_fd ? "percpu_sum" : "files_stat(cached)");
-
-    if (ino_used < 0)
-        seq_puts(m, "ino_used: unavailable\n");
-    else
-        seq_printf(m, "ino_used: %lld src: %s\n", ino_used,
-                   live_ino ? "live" : "inodes_stat(cached)");
+    seq_printf(m, "mod_ino_used: %d (rules=%d paths=%d)\n", rules + paths, rules, paths);
+    seq_printf(m, "mod_fd_used: %d (taken=%d released=%d)\n", taken - released, taken, released);
 }
 
 /* ---- /proc/susfs_path: the same table and the same command layer as hide_list ----
@@ -2123,12 +2048,11 @@ static int sus_path_proc_show(struct seq_file *m, void *v)
     char *buf = kvmalloc(PAGE_SIZE, GFP_KERNEL);
     int n;
 
-    /* First thing on the node: the two global occupancy numbers, so a reader that
-     * only greps for them does not depend on the rule listing's size. */
-    sus_path_fd_ino_show(m);
-
     if (!buf)
         return -ENOMEM;
+    /* First thing on the node, so a reader that only greps for it does not depend on
+     * the rule listing's size. */
+    sus_path_fd_ino_show(m);
     n = sus_path_format_list(buf, PAGE_SIZE);
     if (n > 0)
         seq_write(m, buf, (size_t)n);
