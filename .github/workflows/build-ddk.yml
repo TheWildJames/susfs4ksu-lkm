@@ -491,7 +491,7 @@ jobs:
           for s in filp_open get_unused_fd_flags fd_install user_path_at kern_path path_put path_get \
                    d_backing_inode dput mntput getname_kernel vfs_open \
                    filename_lookup user_path_at_empty getname_flags getname filename_parentat \
-                   do_filp_open path_openat do_dentry_open; do
+                   do_filp_open path_openat do_dentry_open putname __putname; do
             m=0
             if [ -f "$S/System.map" ]; then m=$(grep -cE "(^|[[:space:]])$s\$" "$S/System.map" || true); fi
             y=0

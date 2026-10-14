@@ -39,6 +39,7 @@
 #include <linux/uaccess.h>
 #include "mount.h"		/* fs/mount.h: real_mount() -> mnt_id */
 #include <linux/atomic.h>	/* reverse-disguise hit counters */
+#include <linux/rcupdate.h>	/* the entry hook's match runs under rcu_read_lock, like the probes */
 #include <linux/mm.h>		/* struct vm_area_struct (the maps reverse face) */
 #include <linux/kdev_t.h>	/* MAJOR/MINOR, to render dev:ino the way proc does */
 #include <linux/kernel.h>	/* scnprintf, for the same rendering */
@@ -219,6 +220,32 @@ static struct sus_or_entry *or_find_by_inode(unsigned long ino, dev_t dev)
 			return &or_entries[i];
 	}
 	return NULL;
+}
+
+/* The name-layer entry hook asks this one, with the path the caller is about to open.  It returns a
+ * pointer to the rule's redirect target, or NULL.  The pointer is into the entry, which lives in a
+ * static array, so it stays valid after the unlock; or_del() clears the string rather than freeing
+ * it, and the empty result is reported as "no rule" so a rule that is being deleted mid-open is
+ * not opened as "" .  The table read is lockless for the same reason the probes' is - `dead` is
+ * cleared last, so a non-dead entry has complete fields - and nothing here keeps a reference. */
+const char *susfs_open_redirect_match_path(const struct path *path)
+{
+	struct inode *inode;
+	struct sus_or_entry *e;
+	const char *hit = NULL;
+
+	if (!READ_ONCE(nor) || !path->dentry)
+		return NULL;
+	inode = d_inode(path->dentry);
+	if (!inode)
+		return NULL;
+
+	rcu_read_lock();
+	e = or_find_by_inode(inode->i_ino, inode->i_sb->s_dev);
+	if (e && or_uid_matches(e->uid_scheme) && e->redirected_pathname[0])
+		hit = e->redirected_pathname;
+	rcu_read_unlock();
+	return hit;
 }
 
 /* Reverse direction: keyed on the redirected (really opened) inode, published like or_find_by_inode(). */
@@ -799,6 +826,11 @@ int susfs_open_redirect_init(void)
 			(int)susfs_expose_proc, (int)sus_path_lsm_active());
 	}
 
+	/* The name-layer route for the same rules (kernel/susfs_or_entry.c): it holds nothing, so while
+	 * it is on, a rule stops mattering to umount.  Optional and off by default - it reports what it
+	 * could not resolve and leaves the vfs_open path exactly as it was. */
+	susfs_or_entry_init();
+
 	SUSFS_LOGI("susfs_open_redirect: %d rules (hook %s, proc %d)\n", nor,
 		or_registered ? "armed" : "lazy", or_proc_entry != NULL);
 	return 0;
@@ -807,6 +839,10 @@ int susfs_open_redirect_init(void)
 void susfs_open_redirect_exit(void)
 {
 	int i;
+
+	/* Stop being reachable from the syscall table first: the hook pointer is cleared before the
+	 * probes come down, so no entry that is still installed can call into this layer's exit. */
+	susfs_or_entry_exit();
 
 	/* "Stop accepting registrations" and "drop the probes" are one critical section: a /proc
 	 * write holds no module reference, so it can be sitting inside or_proc_write() right now,

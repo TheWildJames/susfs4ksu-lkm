@@ -172,4 +172,16 @@ static inline bool susfs_control_node_allowed(void)
  * not one the reverse disguise applies to.  On success *out_ino is the target inode to show, *out_mnt_id the target mount id. */
 bool susfs_open_redirect_spoof_ids(unsigned long ino, unsigned long *out_ino, unsigned long *out_mnt_id);
 
+/* Asked by the name-layer entry hook (susfs_or_entry.c) for the path a caller is about to open:
+ * non-NULL means a live rule redirects that inode, and the pointer is that rule's redirect target.
+ * It points INTO the rule entry (a static array), so it stays valid after the call and needs no
+ * buffer: or_del() only clears the string, and a cleared one reads back empty, which the caller
+ * treats as "no rule". */
+const char *susfs_open_redirect_match_path(const struct path *path);
+
+/* The name-layer redirection of the same feature: no cached path, no inode held.  Optional - it
+ * stays unarmed when a symbol it needs is missing - and off unless the or_entry parameter says so. */
+int susfs_or_entry_init(void);
+void susfs_or_entry_exit(void);
+
 #endif

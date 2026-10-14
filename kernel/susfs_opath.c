@@ -67,6 +67,7 @@
 #include "susfs.h"		/* susfs_control_node_allowed(), sus_path_inode_hidden_public() */
 #include "susfs_opath.h"
 #include "susfs_fp_hook.h"
+#include "susfs_or_entry.h"	/* open_redirect's name layer shares exactly these five entries */
 
 /* The AArch32 numbers.  No arm64 header defines them as __NR_*: they are what
  * arch/arm64/include/asm/unistd32.h is generated from, i.e.
@@ -233,14 +234,24 @@ static __nocfi long susfs_opath_post(long ret)
  * n_opath_seen is bumped here rather than in susfs_opath_post() so that a skipped ordinary open
  * still shows up as "a wrapper ran" - that counter is what tells a device bring-up apart
  * "the entry is not reached at all" from "the entry is reached and the O_PATH test says no". */
-#define SUSFS_OPATH_WRAPPER(fn, slot, flags_reg)			\
+#define SUSFS_OPATH_WRAPPER(fn, slot, flags_reg, kind)			\
 	static __nocfi long fn(const struct pt_regs *regs)		\
 	{								\
 		susfs_syscall_fn_t orig = READ_ONCE(slot);		\
+		susfs_or_entry_fn_t or_hook = READ_ONCE(susfs_or_entry_hook);	\
 		long ret;						\
 									\
 		if (!orig)						\
 			return -ENOSYS;					\
+		/* open_redirect's name layer is asked first, and gets the same five entries: a	\
+		 * syscall entry can have only one wrapper, so it registers a hook instead of	\
+		 * installing its own.  When it redirects, the original syscall is not called at	\
+		 * all - it opens the target itself and returns the fd. */			\
+		if (or_hook) {						\
+			ret = or_hook(regs, (kind));			\
+			if (ret != SUSFS_OR_ENTRY_PASS)			\
+				return ret;				\
+		}							\
 		ret = orig(regs);					\
 		atomic_inc(&n_opath_seen);				\
 		if ((flags_reg) >= 0 && !(regs->regs[flags_reg] & O_PATH))	\
@@ -254,11 +265,11 @@ static susfs_syscall_fn_t opath_orig_compat_open;
 static susfs_syscall_fn_t opath_orig_compat_openat;
 static susfs_syscall_fn_t opath_orig_compat_openat2;
 
-SUSFS_OPATH_WRAPPER(susfs_opath_openat, opath_orig_openat, 2)
-SUSFS_OPATH_WRAPPER(susfs_opath_openat2, opath_orig_openat2, -1)
-SUSFS_OPATH_WRAPPER(susfs_opath_compat_open, opath_orig_compat_open, 1)
-SUSFS_OPATH_WRAPPER(susfs_opath_compat_openat, opath_orig_compat_openat, 2)
-SUSFS_OPATH_WRAPPER(susfs_opath_compat_openat2, opath_orig_compat_openat2, -1)
+SUSFS_OPATH_WRAPPER(susfs_opath_openat, opath_orig_openat, 2, SUSFS_OR_ENTRY_OPENAT)
+SUSFS_OPATH_WRAPPER(susfs_opath_openat2, opath_orig_openat2, -1, SUSFS_OR_ENTRY_OPENAT2)
+SUSFS_OPATH_WRAPPER(susfs_opath_compat_open, opath_orig_compat_open, 1, SUSFS_OR_ENTRY_COMPAT_OPEN)
+SUSFS_OPATH_WRAPPER(susfs_opath_compat_openat, opath_orig_compat_openat, 2, SUSFS_OR_ENTRY_COMPAT_OPENAT)
+SUSFS_OPATH_WRAPPER(susfs_opath_compat_openat2, opath_orig_compat_openat2, -1, SUSFS_OR_ENTRY_COMPAT_OPENAT2)
 
 /* The five entries.  nr < 0 means "no native entry": arm64 has no native open at all, and for
  * the AArch32 open(5) the native number 5 is setxattr (include/uapi/asm-generic/unistd.h:47) -
